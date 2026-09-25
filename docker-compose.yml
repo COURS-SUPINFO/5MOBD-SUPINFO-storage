@@ -1,0 +1,47 @@
+services:
+  minio:
+    image: minio/minio:latest
+    command: server /data --console-address ":9001"
+    ports:
+      - "9000:9000" # S3 API
+      - "9001:9001" # Web console (http://localhost:9001)
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ACCESS_KEY:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_SECRET_KEY:-minioadmin123}
+    volumes:
+      - minio-data:/data
+    restart: unless-stopped
+
+  # One-shot job: creates the bucket and makes it publicly readable (anonymous download only,
+  # never anonymous upload) so the public URLs stored by the app just work in <Image>.
+  # Retries with `mc` itself instead of a compose healthcheck, since the minio image has no
+  # curl/wget to probe with.
+  minio-init:
+    image: minio/mc:latest
+    depends_on:
+      - minio
+    entrypoint: >
+      /bin/sh -c "
+      until mc alias set local http://minio:9000 ${MINIO_ACCESS_KEY:-minioadmin} ${MINIO_SECRET_KEY:-minioadmin123}; do echo 'waiting for minio...'; sleep 2; done;
+      mc mb --ignore-existing local/${MINIO_BUCKET:-mesbonnesadresses};
+      mc anonymous set download local/${MINIO_BUCKET:-mesbonnesadresses};
+      echo 'MinIO bucket ready.';
+      "
+
+  upload-api:
+    build: ./server
+    ports:
+      - "4000:4000"
+    environment:
+      # Must be reachable by the app (browser/simulator/device), not just by other containers -
+      # set it to your LAN IP (or 10.0.2.2 for the Android emulator) when testing on a device.
+      MINIO_PUBLIC_ENDPOINT: ${MINIO_PUBLIC_ENDPOINT:-http://localhost:9000}
+      MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY:-minioadmin}
+      MINIO_SECRET_KEY: ${MINIO_SECRET_KEY:-minioadmin123}
+      MINIO_BUCKET: ${MINIO_BUCKET:-mesbonnesadresses}
+    depends_on:
+      - minio
+    restart: unless-stopped
+
+volumes:
+  minio-data:
